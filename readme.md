@@ -1,10 +1,10 @@
 # Zig-TempAllocator
 
-A stack allocator similar to std.ArenaAllocator, except:
+A stack allocator similar to std.heap.ArenaAllocator, except:
 
 - You can reset the whole allocator without releasing the underlying memory back to the OS.
 - You can take a snapshot at any time and later invalidate/free all allocations after that point, but preserving allocations before it.
-- It will track how much memory is usually used before being reset, and release some if it remains significantly lower than the capacity.
+- It will track how much memory is usually used before being reset, and release some if it remains significantly lower than the current committed capacity.
 - The inner "child allocator" is not configurable; internally it uses OS memory management facilities directly.
 
 The primary use-cases for TempAllocator are real-time interactive programs and simulations (games, GUIs, etc.), but it can be useful for anything where work is done sequentially in a main loop, and it's easy to guarantee that memory allocated from it won't be held across resets.
