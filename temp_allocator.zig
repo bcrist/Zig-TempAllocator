@@ -71,7 +71,8 @@ pub fn reserve(self: *TempAllocator, max_capacity: usize) !void {
     }
 
     self.uncommitted = self.reservation.len;
-    self.available = &[_]u8 {};
+    self.available = self.reservation;
+    self.available.len = 0;
 }
 
 pub fn deinit(self: *TempAllocator) void {
