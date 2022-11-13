@@ -110,7 +110,7 @@ pub fn releaseToSnapshot(self: *TempAllocator, snapshot_value: usize) void {
 }
 
 pub fn highWaterUsage(self: *TempAllocator) usize {
-    return @maximum(self.high_water, self.snapshot());
+    return @max(self.high_water, self.snapshot());
 }
 
 pub fn reset(self: *TempAllocator) void {
@@ -160,7 +160,7 @@ fn computeUsageEstimate(self: *TempAllocator, usage: usize, comptime usage_contr
         return usage;
     } else if (usage > last_usage_estimate) {
         if (usage > committed_bytes and self.prev_usage > committed_bytes) {
-            const delta = @maximum(usage, self.prev_usage) - last_usage_estimate;
+            const delta = @max(usage, self.prev_usage) - last_usage_estimate;
             return last_usage_estimate + scaleUsageDelta(delta, fast_usage_expansion_rate);
         } else {
             const avg_usage = usage / 2 + self.prev_usage / 2;
@@ -178,7 +178,7 @@ fn computeUsageEstimate(self: *TempAllocator, usage: usize, comptime usage_contr
 }
 
 fn scaleUsageDelta(delta: usize, comptime scale: usize) usize {
-    return @maximum(1, if (delta >= (1 << 20)) delta / 1024 * scale else delta * scale / 1024);
+    return @max(1, if (delta >= (1 << 20)) delta / 1024 * scale else delta * scale / 1024);
 }
 
 fn alloc(self: *TempAllocator, n: usize, ptr_align: u29, len_align: u29, ra: usize) std.mem.Allocator.Error![]u8 {
@@ -220,7 +220,6 @@ fn alloc(self: *TempAllocator, n: usize, ptr_align: u29, len_align: u29, ra: usi
 fn resize(self: *TempAllocator, buf: []u8, buf_align: u29, new_len: usize, len_align: u29, ret_addr: usize) ?usize {
     _ = buf_align;
     _ = len_align;
-    _ = ret_addr;
 
     if (buf.len >= new_len) {
         if (buf[buf.len..].ptr == self.available.ptr) {
