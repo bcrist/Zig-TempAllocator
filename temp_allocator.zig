@@ -42,7 +42,14 @@ usage_estimate: usize = 0,
 prev_usage: usize = 0,
 
 pub fn allocator(self: *TempAllocator) std.mem.Allocator {
-    return std.mem.Allocator.init(self, alloc, resize, free);
+    return .{
+        .ptr = self,
+        .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .free = free,
+        },
+    };
 }
 
 pub fn init(max_capacity: usize) !TempAllocator {
@@ -181,17 +188,19 @@ fn scaleUsageDelta(delta: usize, comptime scale: usize) usize {
     return @max(1, if (delta >= (1 << 20)) delta / 1024 * scale else delta * scale / 1024);
 }
 
-fn alloc(self: *TempAllocator, n: usize, ptr_align: u29, len_align: u29, ra: usize) std.mem.Allocator.Error![]u8 {
-    _ = len_align;
+fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
     _ = ra;
 
-    const align_offset = std.mem.alignPointerOffset(self.available.ptr, ptr_align) orelse return error.OutOfMemory;
+    const self = @ptrCast(*TempAllocator, @alignCast(@alignOf(TempAllocator), ctx));
+
+    const ptr_align = @as(usize, 1) << @intCast(std.mem.Allocator.Log2Align, log2_ptr_align);
+    const align_offset = std.mem.alignPointerOffset(self.available.ptr, ptr_align) orelse return null;
     const needed = n + align_offset;
     if (needed > self.available.len) {
 
         const len_to_commit = std.mem.alignForward(needed - self.available.len, commit_granularity);
         if (len_to_commit > self.uncommitted) {
-            return error.OutOfMemory;
+            return null;
         }
 
         const end_of_available = self.committed();
@@ -199,9 +208,7 @@ fn alloc(self: *TempAllocator, n: usize, ptr_align: u29, len_align: u29, ra: usi
         switch (os) {
             .windows => {
                 const w = std.os.windows;
-                _ = w.VirtualAlloc(self.reservation[end_of_available..].ptr, len_to_commit, w.MEM_COMMIT, w.PAGE_READWRITE) catch {
-                    return error.OutOfMemory;
-                };
+                _ = w.VirtualAlloc(self.reservation[end_of_available..].ptr, len_to_commit, w.MEM_COMMIT, w.PAGE_READWRITE) catch return null;
             },
             else => {
                 // already mapped with RW access
@@ -214,12 +221,13 @@ fn alloc(self: *TempAllocator, n: usize, ptr_align: u29, len_align: u29, ra: usi
 
     const result = self.available[align_offset..needed];
     self.available = self.available[needed..];
-    return result;
+    return result.ptr;
 }
 
-fn resize(self: *TempAllocator, buf: []u8, buf_align: u29, new_len: usize, len_align: u29, ret_addr: usize) ?usize {
+fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
     _ = buf_align;
-    _ = len_align;
+
+    const self = @ptrCast(*TempAllocator, @alignCast(@alignOf(TempAllocator), ctx));
 
     if (buf.len >= new_len) {
         if (buf[buf.len..].ptr == self.available.ptr) {
@@ -229,26 +237,28 @@ fn resize(self: *TempAllocator, buf: []u8, buf_align: u29, new_len: usize, len_a
             self.available = self.reservation[end_of_available - self.available.len - buf.len + new_len .. end_of_available];
             self.high_water = high_water;
         }
-        return new_len;
+        return true;
     } else if (buf[buf.len..].ptr == self.available.ptr) {
         // expanding the last allocation
         const old_available = self.available;
         const end_of_available = self.committed();
         self.available = self.reservation[end_of_available - self.available.len - buf.len .. end_of_available];
-        _ = self.alloc(new_len, 1, 1, ret_addr) catch {
+        _ = alloc(ctx, new_len, 0, ret_addr) orelse {
             self.available = old_available;
-            return null;
+            return false;
         };
-        return new_len;
+        return true;
     } else {
         // can't expand an internal allocation
-        return null;
+        return false;
     }
 }
 
-fn free(self: *TempAllocator, buf: []u8, buf_align: u29, ret_addr: usize) void {
+fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
     _ = buf_align;
     _ = ret_addr;
+
+    const self = @ptrCast(*TempAllocator, @alignCast(@alignOf(TempAllocator), ctx));
 
     if (buf[buf.len..].ptr == self.available.ptr) {
         // freeing the last allocation
