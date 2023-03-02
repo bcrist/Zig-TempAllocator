@@ -144,7 +144,7 @@ pub fn resetAdvanced(self: *TempAllocator, comptime usage_contraction_rate: u16,
             },
             else => {
                 const MADV = std.os.MADV;
-                std.os.madvise(to_decommit.ptr, to_decommit.len, MADV.DONTNEED) catch {
+                std.os.madvise(@alignCast(std.mem.page_size, to_decommit.ptr), to_decommit.len, MADV.DONTNEED) catch {
                     // ignore
                 };
             },
