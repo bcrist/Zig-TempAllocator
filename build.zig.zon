@@ -1,5 +1,10 @@
 .{
     .name = "Zig-TempAllocator",
-    .version = "1.0.0",
+    .version = "1.0.1",
+    .minimum_zig_version = "0.12.0-dev.1591+3fc6a2f11",
     .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "TempAllocator.zig",
+    },
 }

@@ -1,9 +1,4 @@
-const std = @import("std");
-const TempAllocator = @import("temp_allocator.zig");
-
-const expectEqual = std.testing.expectEqual;
-
-test "TempAllocator" {
+test {
     var ta = try TempAllocator.init(1024 * 1024 * 1024 * 1024); // 1 TB
     defer ta.deinit();
 
@@ -47,3 +42,7 @@ test "TempAllocator" {
 
     try expectEqual(@as(usize, 0x30000), ta.committed());
 }
+
+const expectEqual = std.testing.expectEqual;
+const TempAllocator = @import("TempAllocator");
+const std = @import("std");

@@ -1,9 +1,3 @@
-const std = @import("std");
-const builtin = @import("builtin");
-const os = builtin.os.tag;
-
-const TempAllocator = @This();
-
 // This allocator utilizes a fixed chunk of virtual address space to allocate from.  The size
 // of this chunk must be specified when initializing the allocator, and can't be changed without
 // first `deinit`ing all the memory first.  But this maximum size may be enormous, because it
@@ -22,7 +16,7 @@ const TempAllocator = @This();
 //    pages where that may be the case.
 
 /// The amount of memory committed or uncommitted at a time will always be a multiple of this.
-const commit_granularity = std.mem.alignForward(0x10000, std.mem.page_size);
+const commit_granularity = std.mem.alignForward(usize, 0x10000, std.mem.page_size);
 
 /// Memory that has been committed, but not yet used for an allocation.
 /// The allocator attempts to fulfill requests from this first.
@@ -64,7 +58,7 @@ pub fn reserve(self: *TempAllocator, max_capacity: usize) !void {
     switch (os) {
         .windows => {
             const w = std.os.windows;
-            self.reservation.ptr = @alignCast(std.mem.page_size, @ptrCast([*]u8, try w.VirtualAlloc(null, max_capacity, w.MEM_RESERVE, w.PAGE_NOACCESS)));
+            self.reservation.ptr = @alignCast(@ptrCast(try w.VirtualAlloc(null, max_capacity, w.MEM_RESERVE, w.PAGE_NOACCESS)));
             self.reservation.len = max_capacity;
         },
         else => {
@@ -132,7 +126,7 @@ pub fn resetAdvanced(self: *TempAllocator, comptime usage_contraction_rate: u16,
     const high_water = self.highWaterUsage();
     const new_usage_estimate = self.computeUsageEstimate(high_water, usage_contraction_rate, usage_expansion_rate, fast_usage_expansion_rate);
     var committed_bytes = self.reservation.len - self.uncommitted;
-    const max_committed = std.mem.alignForward(new_usage_estimate + commit_granularity, commit_granularity);
+    const max_committed = std.mem.alignForward(usize, new_usage_estimate + commit_granularity, commit_granularity);
 
     if (committed_bytes > max_committed) {
         const to_decommit = self.reservation[max_committed..committed_bytes];
@@ -144,7 +138,7 @@ pub fn resetAdvanced(self: *TempAllocator, comptime usage_contraction_rate: u16,
             },
             else => {
                 const MADV = std.os.MADV;
-                std.os.madvise(@alignCast(std.mem.page_size, to_decommit.ptr), to_decommit.len, MADV.DONTNEED) catch {
+                std.os.madvise(@alignCast(to_decommit.ptr), to_decommit.len, MADV.DONTNEED) catch {
                     // ignore
                 };
             },
@@ -191,14 +185,14 @@ fn scaleUsageDelta(delta: usize, comptime scale: usize) usize {
 fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
     _ = ra;
 
-    const self = @ptrCast(*TempAllocator, @alignCast(@alignOf(TempAllocator), ctx));
+    const self: *TempAllocator = @ptrCast(@alignCast(ctx));
 
-    const ptr_align = @as(usize, 1) << @intCast(std.mem.Allocator.Log2Align, log2_ptr_align);
+    const ptr_align = @as(usize, 1) << @intCast(log2_ptr_align);
     const align_offset = std.mem.alignPointerOffset(self.available.ptr, ptr_align) orelse return null;
     const needed = n + align_offset;
     if (needed > self.available.len) {
 
-        const len_to_commit = std.mem.alignForward(needed - self.available.len, commit_granularity);
+        const len_to_commit = std.mem.alignForward(usize, needed - self.available.len, commit_granularity);
         if (len_to_commit > self.uncommitted) {
             return null;
         }
@@ -227,7 +221,7 @@ fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
 fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
     _ = buf_align;
 
-    const self = @ptrCast(*TempAllocator, @alignCast(@alignOf(TempAllocator), ctx));
+    const self: *TempAllocator = @ptrCast(@alignCast(ctx));
 
     if (buf.len >= new_len) {
         if (buf[buf.len..].ptr == self.available.ptr) {
@@ -258,7 +252,7 @@ fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
     _ = buf_align;
     _ = ret_addr;
 
-    const self = @ptrCast(*TempAllocator, @alignCast(@alignOf(TempAllocator), ctx));
+    const self: *TempAllocator = @ptrCast(@alignCast(ctx));
 
     if (buf[buf.len..].ptr == self.available.ptr) {
         // freeing the last allocation
@@ -268,3 +262,7 @@ fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
         self.high_water = high_water;
     }
 }
+
+const TempAllocator = @This();
+const os = @import("builtin").os.tag;
+const std = @import("std");

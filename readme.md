@@ -29,6 +29,10 @@ The primary use-cases for TempAllocator are real-time interactive programs and s
         }
     }
 
+## Zig Version
+
+Last updated for `zig 0.12.0-dev.1591+3fc6a2f11`; use with significantly older or newer versions may require adjustments
+
 ## Implementation Notes
 
 TempAllocator utilizes a fixed chunk of virtual address space to allocate from.  The size of this chunk must be specified when initializing the allocator, and can't be changed while the allocator is in use.  But the maximum size may be enormous (up to several terabytes on windows, and possibly even more on other systems).  This is because the full virtual address chunk won't be "committed" to physical memory and/or swap pages until it's actually used.
