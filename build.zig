@@ -1,5 +1,8 @@
 const std = @import("std");
 
+// Exported directly in case you want to use TempAllocator in a build script
+pub const TempAllocator = @import("TempAllocator.zig");
+
 pub fn build(b: *std.Build) void {
     const temp_allocator = b.addModule("TempAllocator", .{
         .source_file = .{ .path = "TempAllocator.zig" },
