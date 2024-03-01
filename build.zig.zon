@@ -6,6 +6,6 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "TempAllocator.zig",
+        "Temp_Allocator.zig",
     },
 }

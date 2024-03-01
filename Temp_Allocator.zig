@@ -27,7 +27,7 @@ reservation: []align(std.mem.page_size) u8 = &[_]u8 {},
 uncommitted: usize = 0,
 /// If The maximum bytes used has decreased since the last time the allocator was reset,
 /// this will store the maximum usage before the decrease.  It is only updated when
-/// `available.len + uncommitted` increases; use `highWaterUsage()` to query the actual
+/// `available.len + uncommitted` increases; use `high_water_usage()` to query the actual
 /// value including the current usage.
 high_water: usize = 0,
 /// An exponential moving average for estimating what the high water mark will be on the next reset.
@@ -35,7 +35,7 @@ usage_estimate: usize = 0,
 /// The actual high water mark from the last time the allocator was reset.
 prev_usage: usize = 0,
 
-pub fn allocator(self: *TempAllocator) std.mem.Allocator {
+pub fn allocator(self: *Temp_Allocator) std.mem.Allocator {
     return .{
         .ptr = self,
         .vtable = &.{
@@ -46,13 +46,13 @@ pub fn allocator(self: *TempAllocator) std.mem.Allocator {
     };
 }
 
-pub fn init(max_capacity: usize) !TempAllocator {
-    var self = TempAllocator {};
+pub fn init(max_capacity: usize) !Temp_Allocator {
+    var self = Temp_Allocator {};
     try self.reserve(max_capacity);
     return self;
 }
 
-pub fn reserve(self: *TempAllocator, max_capacity: usize) !void {
+pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
     std.debug.assert(self.reservation.len == 0);
 
     switch (os) {
@@ -76,7 +76,7 @@ pub fn reserve(self: *TempAllocator, max_capacity: usize) !void {
     self.available.len = 0;
 }
 
-pub fn deinit(self: *TempAllocator) void {
+pub fn deinit(self: *Temp_Allocator) void {
     if (self.reservation.len > 0) {
         switch (os) {
             .windows => {
@@ -93,16 +93,16 @@ pub fn deinit(self: *TempAllocator) void {
     self.uncommitted = 0;
 }
 
-pub fn committed(self: *TempAllocator) usize {
+pub fn committed(self: *Temp_Allocator) usize {
     return self.reservation.len - self.uncommitted;
 }
 
-pub fn snapshot(self: *TempAllocator) usize {
+pub fn snapshot(self: *Temp_Allocator) usize {
     return self.reservation.len - self.uncommitted - self.available.len;
 }
 
-pub fn releaseToSnapshot(self: *TempAllocator, snapshot_value: usize) void {
-    const high_water = self.highWaterUsage();
+pub fn release_to_snapshot(self: *Temp_Allocator, snapshot_value: usize) void {
+    const high_water = self.high_water_usage();
     self.high_water = high_water;
     std.debug.assert(snapshot_value <= high_water);
 
@@ -110,21 +110,22 @@ pub fn releaseToSnapshot(self: *TempAllocator, snapshot_value: usize) void {
     self.available = self.reservation[snapshot_value..end_of_available];
 }
 
-pub fn highWaterUsage(self: *TempAllocator) usize {
+pub fn high_water_usage(self: *Temp_Allocator) usize {
     return @max(self.high_water, self.snapshot());
 }
 
-pub fn reset(self: *TempAllocator) void {
-    // The "half-life" for usage_estimate reacting to changes in usage is:
+pub const Reset_Params = struct {
+    usage_contraction_rate: u16 = 1,
+    usage_expansion_rate: u16 = 64,
+    fast_usage_expansion_rate: u16 = 1024,
+    // The defaults above give an impulse response "half-life" for usage_estimate as follows:
     //     ~11 cycles after an increase
     //     ~710 cycles after a decrease
     // If the initially committed range overflows two cycles in a row, it will be expanded on the second reset.
-    self.resetAdvanced(1, 64, 1024);
-}
-
-pub fn resetAdvanced(self: *TempAllocator, comptime usage_contraction_rate: u16, comptime usage_expansion_rate: u16, comptime fast_usage_expansion_rate: u16) void {
-    const high_water = self.highWaterUsage();
-    const new_usage_estimate = self.computeUsageEstimate(high_water, usage_contraction_rate, usage_expansion_rate, fast_usage_expansion_rate);
+};
+pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
+    const high_water = self.high_water_usage();
+    const new_usage_estimate = self.compute_usage_estimate(high_water, params);
     var committed_bytes = self.reservation.len - self.uncommitted;
     const max_committed = std.mem.alignForward(usize, new_usage_estimate + commit_granularity, commit_granularity);
 
@@ -153,7 +154,7 @@ pub fn resetAdvanced(self: *TempAllocator, comptime usage_contraction_rate: u16,
     self.prev_usage = high_water;
 }
 
-fn computeUsageEstimate(self: *TempAllocator, usage: usize, comptime usage_contraction_rate: u16, comptime usage_expansion_rate: u16, comptime fast_usage_expansion_rate: u16) usize {
+fn compute_usage_estimate(self: *Temp_Allocator, usage: usize, comptime params: Reset_Params) usize {
     const committed_bytes = self.reservation.len - self.uncommitted;
 
     const last_usage_estimate = self.usage_estimate;
@@ -162,30 +163,30 @@ fn computeUsageEstimate(self: *TempAllocator, usage: usize, comptime usage_contr
     } else if (usage > last_usage_estimate) {
         if (usage > committed_bytes and self.prev_usage > committed_bytes) {
             const delta = @max(usage, self.prev_usage) - last_usage_estimate;
-            return last_usage_estimate + scaleUsageDelta(delta, fast_usage_expansion_rate);
+            return last_usage_estimate + scale_usage_delta(delta, params.fast_usage_expansion_rate);
         } else {
             const avg_usage = usage / 2 + self.prev_usage / 2;
             if (avg_usage > last_usage_estimate) {
-                return last_usage_estimate + scaleUsageDelta(avg_usage - last_usage_estimate, usage_expansion_rate);
+                return last_usage_estimate + scale_usage_delta(avg_usage - last_usage_estimate, params.usage_expansion_rate);
             } else {
                 return last_usage_estimate;
             }
         }
     } else if (usage < last_usage_estimate) {
-        return last_usage_estimate - scaleUsageDelta(last_usage_estimate - usage, usage_contraction_rate);
+        return last_usage_estimate - scale_usage_delta(last_usage_estimate - usage, params.usage_contraction_rate);
     } else {
         return last_usage_estimate;
     }
 }
 
-fn scaleUsageDelta(delta: usize, comptime scale: usize) usize {
+fn scale_usage_delta(delta: usize, comptime scale: usize) usize {
     return @max(1, if (delta >= (1 << 20)) delta / 1024 * scale else delta * scale / 1024);
 }
 
 fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
     _ = ra;
 
-    const self: *TempAllocator = @ptrCast(@alignCast(ctx));
+    const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
     const ptr_align = @as(usize, 1) << @intCast(log2_ptr_align);
     const align_offset = std.mem.alignPointerOffset(self.available.ptr, ptr_align) orelse return null;
@@ -221,12 +222,12 @@ fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
 fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
     _ = buf_align;
 
-    const self: *TempAllocator = @ptrCast(@alignCast(ctx));
+    const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
     if (buf.len >= new_len) {
         if (buf[buf.len..].ptr == self.available.ptr) {
             //shrinking the last allocation
-            const high_water = self.highWaterUsage();
+            const high_water = self.high_water_usage();
             const end_of_available = self.committed();
             self.available = self.reservation[end_of_available - self.available.len - buf.len + new_len .. end_of_available];
             self.high_water = high_water;
@@ -252,17 +253,17 @@ fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
     _ = buf_align;
     _ = ret_addr;
 
-    const self: *TempAllocator = @ptrCast(@alignCast(ctx));
+    const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
     if (buf[buf.len..].ptr == self.available.ptr) {
         // freeing the last allocation
-        const high_water = self.highWaterUsage();
+        const high_water = self.high_water_usage();
         const end_of_available = self.committed();
         self.available = self.reservation[end_of_available - self.available.len - buf.len .. end_of_available];
         self.high_water = high_water;
     }
 }
 
-const TempAllocator = @This();
+const Temp_Allocator = @This();
 const os = @import("builtin").os.tag;
 const std = @import("std");
