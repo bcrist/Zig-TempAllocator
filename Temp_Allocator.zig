@@ -155,13 +155,12 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
 }
 
 fn compute_usage_estimate(self: *Temp_Allocator, usage: usize, comptime params: Reset_Params) usize {
-    const committed_bytes = self.reservation.len - self.uncommitted;
-
     const last_usage_estimate = self.usage_estimate;
+    const initial_committed_bytes = std.mem.alignForward(usize, last_usage_estimate + commit_granularity, commit_granularity);
     if (last_usage_estimate == 0) {
         return usage;
     } else if (usage > last_usage_estimate) {
-        if (usage > committed_bytes and self.prev_usage > committed_bytes) {
+        if (usage > initial_committed_bytes and self.prev_usage > initial_committed_bytes) {
             const delta = @max(usage, self.prev_usage) - last_usage_estimate;
             return last_usage_estimate + scale_usage_delta(delta, params.fast_usage_expansion_rate);
         } else {
