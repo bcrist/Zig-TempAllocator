@@ -5,11 +5,11 @@ pub const Temp_Allocator = @import("Temp_Allocator.zig");
 
 pub fn build(b: *std.Build) void {
     const temp_allocator = b.addModule("Temp_Allocator", .{
-        .root_source_file = .{ .path = "Temp_Allocator.zig" },
+        .root_source_file = b.path("Temp_Allocator.zig"),
     });
 
     const tests = b.addTest(.{
-        .root_source_file = .{ .path = "tests.zig" },
+        .root_source_file = b.path("tests.zig"),
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     });
