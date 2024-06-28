@@ -65,9 +65,11 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
             // N.B. We use MAP_NORESERVE to prevent clogging swap, but this does mean we open up the possibility of getting segfaults later
             // when the temporary allocator's memory is written to.  But linux's default vm.overcommit_memory sysctl means that can happen
             // for pretty much any allocation.  So Zig's use of errors to try to handle allocation failures is already broken on linux.
-            const PROT = std.posix.PROT;
-            const MAP = std.posix.MAP;
-            self.reservation = try std.posix.mmap(null, max_capacity, PROT.READ | PROT.WRITE, MAP.PRIVATE | MAP.ANONYMOUS | MAP.NORESERVE, -1, 0);
+            self.reservation = try std.posix.mmap(null, max_capacity, std.posix.PROT.READ | std.posix.PROT.WRITE, .{
+                .TYPE = .PRIVATE,
+                .ANONYMOUS = true,
+                .NORESERVE = true,
+            }, -1, 0);
         }
     }
 
@@ -138,8 +140,7 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
                 w.VirtualFree(to_decommit.ptr, to_decommit.len, w.MEM_DECOMMIT);
             },
             else => {
-                const MADV = std.posix.MADV;
-                std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, MADV.DONTNEED) catch {
+                std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
                     // ignore
                 };
             },
