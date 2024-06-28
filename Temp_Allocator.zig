@@ -65,9 +65,9 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
             // N.B. We use MAP_NORESERVE to prevent clogging swap, but this does mean we open up the possibility of getting segfaults later
             // when the temporary allocator's memory is written to.  But linux's default vm.overcommit_memory sysctl means that can happen
             // for pretty much any allocation.  So Zig's use of errors to try to handle allocation failures is already broken on linux.
-            const PROT = std.os.PROT;
-            const MAP = std.os.MAP;
-            self.reservation = try std.os.mmap(null, max_capacity, PROT.READ | PROT.WRITE, MAP.PRIVATE | MAP.ANONYMOUS | MAP.NORESERVE, -1, 0);
+            const PROT = std.posix.PROT;
+            const MAP = std.posix.MAP;
+            self.reservation = try std.posix.mmap(null, max_capacity, PROT.READ | PROT.WRITE, MAP.PRIVATE | MAP.ANONYMOUS | MAP.NORESERVE, -1, 0);
         }
     }
 
@@ -81,10 +81,10 @@ pub fn deinit(self: *Temp_Allocator) void {
         switch (os) {
             .windows => {
                 const w = std.os.windows;
-                std.os.windows.VirtualFree(self.reservation.ptr, 0, w.MEM_RELEASE);
+                w.VirtualFree(self.reservation.ptr, 0, w.MEM_RELEASE);
             },
             else => {
-                std.os.munmap(self.reservation);
+                std.posix.munmap(self.reservation);
             },
         }
     }
@@ -138,8 +138,8 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
                 w.VirtualFree(to_decommit.ptr, to_decommit.len, w.MEM_DECOMMIT);
             },
             else => {
-                const MADV = std.os.MADV;
-                std.os.madvise(@alignCast(to_decommit.ptr), to_decommit.len, MADV.DONTNEED) catch {
+                const MADV = std.posix.MADV;
+                std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, MADV.DONTNEED) catch {
                     // ignore
                 };
             },
