@@ -11,23 +11,25 @@ The primary use-cases for TempAllocator are real-time interactive programs and s
 
 ## Usage Example
 
-    const std = @import("std");
-    const TempAllocator = @import("temp_allocator.zig");
-    const app = @import("myApp.zig");
+```zig
+const std = @import("std");
+const TempAllocator = @import("temp_allocator.zig");
+const app = @import("myApp.zig");
 
-    pub fn main() void {
-        var tempalloc = TempAllocator.init(1024*1024*1024); // 1GB of virtual address space
-        defer tempalloc.deinit();
+pub fn main() void {
+    var tempalloc = TempAllocator.init(1024*1024*1024); // 1GB of virtual address space
+    defer tempalloc.deinit();
 
-        var n: usize = 0;
-        while (!app.shouldExit()) {
-            tempalloc.reset();
-            n += 1;
+    var n: usize = 0;
+    while (!app.shouldExit()) {
+        tempalloc.reset();
+        n += 1;
 
-            var temp: []u8 = std.fmt.allocPrint(tempalloc.allocator(), "number {} is {s}", .{ n, "Something" });
-            app.doSomethingWithAString(temp);
-        }
+        var temp: []u8 = std.fmt.allocPrint(tempalloc.allocator(), "number {} is {s}", .{ n, "Something" });
+        app.doSomethingWithAString(temp);
     }
+}
+```
 
 ## Zig Version
 
