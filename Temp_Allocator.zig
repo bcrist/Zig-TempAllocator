@@ -16,13 +16,13 @@
 //    pages where that may be the case.
 
 /// The amount of memory committed or uncommitted at a time will always be a multiple of this.
-const commit_granularity = std.mem.alignForward(usize, 0x10000, std.mem.page_size);
+const commit_granularity = std.mem.alignForward(usize, 0x10000, std.heap.page_size_min);
 
 /// Memory that has been committed, but not yet used for an allocation.
 /// The allocator attempts to fulfill requests from this first.
 available: []u8 = &[_]u8 {},
 /// The maximum chunk of virtual address space that may be used by the allocator.
-reservation: []align(std.mem.page_size) u8 = &[_]u8 {},
+reservation: []u8 = &[_]u8 {},
 /// The number of bytes at the end of `reservation` which are not committed.
 uncommitted: usize = 0,
 /// If The maximum bytes used has decreased since the last time the allocator was reset,
@@ -41,6 +41,7 @@ pub fn allocator(self: *Temp_Allocator) std.mem.Allocator {
         .vtable = &.{
             .alloc = alloc,
             .resize = resize,
+            .remap = remap,
             .free = free,
         },
     };
@@ -58,7 +59,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
     switch (os) {
         .windows => {
             const w = std.os.windows;
-            self.reservation.ptr = @alignCast(@ptrCast(try w.VirtualAlloc(null, max_capacity, w.MEM_RESERVE, w.PAGE_NOACCESS)));
+            self.reservation.ptr = @ptrCast(try w.VirtualAlloc(null, max_capacity, w.MEM_RESERVE, w.PAGE_NOACCESS));
             self.reservation.len = max_capacity;
         },
         else => {
@@ -183,13 +184,12 @@ fn scale_usage_delta(delta: usize, comptime scale: usize) usize {
     return @max(1, if (delta >= (1 << 20)) delta / 1024 * scale else delta * scale / 1024);
 }
 
-fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
+fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
     _ = ra;
 
     const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
-    const ptr_align = @as(usize, 1) << @intCast(log2_ptr_align);
-    const align_offset = std.mem.alignPointerOffset(self.available.ptr, ptr_align) orelse return null;
+    const align_offset = std.mem.alignPointerOffset(self.available.ptr, alignment.toByteUnits()) orelse return null;
     const needed = n + align_offset;
     if (needed > self.available.len) {
 
@@ -219,29 +219,28 @@ fn alloc(ctx: *anyopaque, n: usize, log2_ptr_align: u8, ra: usize) ?[*]u8 {
     return result.ptr;
 }
 
-fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
-    _ = buf_align;
-
+fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
     const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
-    if (buf.len >= new_len) {
-        if (buf[buf.len..].ptr == self.available.ptr) {
+    if (memory.len >= new_len) {
+        if (memory[memory.len..].ptr == self.available.ptr) {
             //shrinking the last allocation
             const high_water = self.high_water_usage();
             const end_of_available = self.committed();
-            self.available = self.reservation[end_of_available - self.available.len - buf.len + new_len .. end_of_available];
+            self.available = self.reservation[end_of_available - self.available.len - memory.len + new_len .. end_of_available];
             self.high_water = high_water;
         }
         return true;
-    } else if (buf[buf.len..].ptr == self.available.ptr) {
+    } else if (memory[memory.len..].ptr == self.available.ptr) {
         // expanding the last allocation
         const old_available = self.available;
         const end_of_available = self.committed();
-        self.available = self.reservation[end_of_available - self.available.len - buf.len .. end_of_available];
-        _ = alloc(ctx, new_len, 0, ret_addr) orelse {
+        self.available = self.reservation[end_of_available - self.available.len - memory.len .. end_of_available];
+        const result = alloc(ctx, new_len, alignment, ret_addr) orelse {
             self.available = old_available;
             return false;
         };
+        std.debug.assert(result == memory.ptr);
         return true;
     } else {
         // can't expand an internal allocation
@@ -249,17 +248,21 @@ fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: u
     }
 }
 
-fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
-    _ = buf_align;
+fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+    return if (resize(ctx, memory, alignment, new_len, ret_addr)) memory.ptr else null;
+}
+
+fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+    _ = alignment;
     _ = ret_addr;
 
     const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
-    if (buf[buf.len..].ptr == self.available.ptr) {
+    if (memory[memory.len..].ptr == self.available.ptr) {
         // freeing the last allocation
         const high_water = self.high_water_usage();
         const end_of_available = self.committed();
-        self.available = self.reservation[end_of_available - self.available.len - buf.len .. end_of_available];
+        self.available = self.reservation[end_of_available - self.available.len - memory.len .. end_of_available];
         self.high_water = high_water;
     }
 }
