@@ -1,7 +1,7 @@
 .{
     .name = "Temp_Allocator",
-    .version = "1.0.2",
-    .minimum_zig_version = "0.12.0",
+    .version = "1.0.3",
+    .minimum_zig_version = "0.14.0-dev.3217+5b9b5e45c",
     .dependencies = .{},
     .paths = .{
         "build.zig",
