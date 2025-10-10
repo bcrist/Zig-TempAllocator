@@ -11,9 +11,8 @@
 //  - On windows it means memory that has been allocated with `VirtualAlloc(..., MEM_COMMIT...)`.
 //    Uncommitted memory on Windows will trigger an access violation if read or written.
 //    See details here: https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-//  - On other systems, the full virtual address space reservation can be read or written at any time, but
-//    pages won't be assigned until they're written to for the first time.  "Committed" on these systems means
-//    pages where that may be the case.
+//  - On other systems, the full virtual address space reservation is `mmap`ed with `PROT_NONE` and then
+//    converted to `PROT_READ | PROT_WRITE` as necessary
 
 /// The amount of memory committed or uncommitted at a time will always be a multiple of this.
 const commit_granularity = std.mem.alignForward(usize, 0x10000, std.heap.page_size_min);
@@ -66,7 +65,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
             // N.B. We use MAP_NORESERVE to prevent clogging swap, but this does mean we open up the possibility of getting segfaults later
             // when the temporary allocator's memory is written to.  But linux's default vm.overcommit_memory sysctl means that can happen
             // for pretty much any allocation.  So Zig's use of errors to try to handle allocation failures is already broken on linux.
-            self.reservation = try std.posix.mmap(null, max_capacity, std.posix.PROT.READ | std.posix.PROT.WRITE, .{
+            self.reservation = try std.posix.mmap(null, max_capacity, std.posix.PROT.NONE, .{
                 .TYPE = .PRIVATE,
                 .ANONYMOUS = true,
                 .NORESERVE = true,
@@ -87,7 +86,7 @@ pub fn deinit(self: *Temp_Allocator) void {
                 w.VirtualFree(self.reservation.ptr, 0, w.MEM_RELEASE);
             },
             else => {
-                std.posix.munmap(self.reservation);
+                std.posix.munmap(@alignCast(self.reservation));
             },
         }
     }
@@ -142,6 +141,9 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
             },
             else => {
                 std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
+                    // ignore
+                };
+                std.posix.mprotect(@alignCast(to_decommit), std.posix.PROT.NONE) catch {
                     // ignore
                 };
             },
@@ -199,14 +201,15 @@ fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*
         }
 
         const end_of_available = self.committed();
+        const to_commit = self.reservation[end_of_available..][0..len_to_commit];
 
         switch (os) {
             .windows => {
                 const w = std.os.windows;
-                _ = w.VirtualAlloc(self.reservation[end_of_available..].ptr, len_to_commit, w.MEM_COMMIT, w.PAGE_READWRITE) catch return null;
+                _ = w.VirtualAlloc(to_commit.ptr, to_commit.len, w.MEM_COMMIT, w.PAGE_READWRITE) catch return null;
             },
             else => {
-                // already mapped with RW access
+                std.posix.mprotect(@alignCast(to_commit), std.posix.PROT.READ | std.posix.PROT.WRITE) catch return null;
             },
         }
 
