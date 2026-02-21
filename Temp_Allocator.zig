@@ -55,17 +55,21 @@ pub fn init(max_capacity: usize) !Temp_Allocator {
 pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
     std.debug.assert(self.reservation.len == 0);
 
-    switch (os) {
+    switch (builtin.os.tag) {
         .windows => {
             const w = std.os.windows;
-            self.reservation.ptr = @ptrCast(try w.VirtualAlloc(null, max_capacity, w.MEM_RESERVE, w.PAGE_NOACCESS));
-            self.reservation.len = max_capacity;
+            var base_addr: ?*anyopaque = null;
+            var size: usize = max_capacity;
+            const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .RESERVE = true }, .{ .NOACCESS = true });
+            if (status != w.NTSTATUS.SUCCESS) return error.OutOfMemory;
+            self.reservation.ptr = @ptrCast(base_addr);
+            self.reservation.len = size;
         },
         else => {
             // N.B. We use MAP_NORESERVE to prevent clogging swap, but this does mean we open up the possibility of getting segfaults later
             // when the temporary allocator's memory is written to.  But linux's default vm.overcommit_memory sysctl means that can happen
             // for pretty much any allocation.  So Zig's use of errors to try to handle allocation failures is already broken on linux.
-            self.reservation = try std.posix.mmap(null, max_capacity, std.posix.PROT.NONE, .{
+            self.reservation = try std.posix.mmap(null, max_capacity, .{}, .{
                 .TYPE = .PRIVATE,
                 .ANONYMOUS = true,
                 .NORESERVE = true,
@@ -80,10 +84,12 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
 
 pub fn deinit(self: *Temp_Allocator) void {
     if (self.reservation.len > 0) {
-        switch (os) {
+        switch (builtin.os.tag) {
             .windows => {
                 const w = std.os.windows;
-                w.VirtualFree(self.reservation.ptr, 0, w.MEM_RELEASE);
+                var base_addr: ?*anyopaque = self.reservation.ptr;
+                var size: usize = 0;
+                _ = w.ntdll.NtFreeVirtualMemory(w.current_process, @ptrCast(&base_addr), &size, .{ .RELEASE = true });
             },
             else => {
                 std.posix.munmap(@alignCast(self.reservation));
@@ -134,18 +140,18 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
     if (committed_bytes > max_committed) {
         const to_decommit = self.reservation[max_committed..committed_bytes];
         self.uncommitted = self.reservation.len - max_committed;
-        switch (os) {
+        switch (builtin.os.tag) {
             .windows => {
                 const w = std.os.windows;
-                w.VirtualFree(to_decommit.ptr, to_decommit.len, w.MEM_DECOMMIT);
+                var base_addr: ?*anyopaque = to_decommit.ptr;
+                var size: usize = to_decommit.len;
+                _ = w.ntdll.NtFreeVirtualMemory(w.current_process, @ptrCast(&base_addr), &size, .{ .DECOMMIT = true });
             },
             else => {
                 std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
                     // ignore
                 };
-                std.posix.mprotect(@alignCast(to_decommit), std.posix.PROT.NONE) catch {
-                    // ignore
-                };
+                _ = std.posix.system.mprotect(to_decommit.ptr, to_decommit.len, .{});
             },
         }
 
@@ -203,13 +209,19 @@ fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*
         const end_of_available = self.committed();
         const to_commit = self.reservation[end_of_available..][0..len_to_commit];
 
-        switch (os) {
+        switch (builtin.os.tag) {
             .windows => {
                 const w = std.os.windows;
-                _ = w.VirtualAlloc(to_commit.ptr, to_commit.len, w.MEM_COMMIT, w.PAGE_READWRITE) catch return null;
+                var base_addr: ?*anyopaque = to_commit.ptr;
+                var size: usize = to_commit.len;
+                const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true });
+                if (status != w.NTSTATUS.SUCCESS) return null;
+                std.debug.assert(base_addr == @as(?*anyopaque, to_commit.ptr));
+                std.debug.assert(size == len_to_commit);
             },
             else => {
-                std.posix.mprotect(@alignCast(to_commit), std.posix.PROT.READ | std.posix.PROT.WRITE) catch return null;
+                const status = std.posix.system.mprotect(to_commit.ptr, to_commit.len, .{ .READ = true, .WRITE = true });
+                if (status != 0) return null;
             },
         }
 
@@ -271,5 +283,5 @@ fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: u
 }
 
 const Temp_Allocator = @This();
-const os = @import("builtin").os.tag;
+const builtin = @import("builtin");
 const std = @import("std");
