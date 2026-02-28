@@ -151,7 +151,7 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
                 std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
                     // ignore
                 };
-                _ = std.posix.system.mprotect(@alignCast(to_decommit.ptr), to_decommit.len, .{});
+                _ = std.posix.system.mprotect(@alignCast(@ptrCast(to_decommit.ptr)), to_decommit.len, .{});
             },
         }
 
@@ -220,7 +220,7 @@ fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*
                 std.debug.assert(size == len_to_commit);
             },
             else => {
-                const status = std.posix.system.mprotect(@alignCast(to_commit.ptr), to_commit.len, .{ .READ = true, .WRITE = true });
+                const status = std.posix.system.mprotect(@alignCast(@ptrCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
                 if (status != 0) return null;
             },
         }
