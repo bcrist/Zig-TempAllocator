@@ -1,5 +1,3 @@
-const std = @import("std");
-
 // Exported directly in case you want to use Temp_Allocator in a build script
 pub const Temp_Allocator = @import("Temp_Allocator.zig");
 
@@ -24,3 +22,5 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(tests);
     b.step("test", "Run all tests").dependOn(&b.addRunArtifact(tests).step);
 }
+
+const std = @import("std");
