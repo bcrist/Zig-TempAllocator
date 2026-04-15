@@ -3,7 +3,7 @@ on:
   schedule:
     - cron: '0 0 * * *'
   push:
-    branches: zig-0.16
+    branches: zig-master
 jobs:
   test:
     name: 'Test'
@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: zig-0.16
+          ref: zig-master
       - uses: mlugg/setup-zig@v2
         with:
           version: master
