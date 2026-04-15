@@ -2,7 +2,7 @@
     .name = .Temp_Allocator,
     .fingerprint = 0x5587b57ddce93db5,
     .version = "1.1.0",
-    .minimum_zig_version = "0.16.0-dev.2626+0e3c6514a",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",
