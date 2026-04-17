@@ -15,5 +15,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: master
+          mirror: 'https://zig.bcr.ist/'
       - run: zig build -Dtarget=x86_64-windows
       - run: zig build test
