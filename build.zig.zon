@@ -1,7 +1,7 @@
 .{
     .name = .Temp_Allocator,
     .fingerprint = 0x5587b57ddce93db5,
-    .version = "1.2.0",
+    .version = "1.2.1",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{

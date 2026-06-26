@@ -141,6 +141,16 @@ pub fn high_water_usage(self: *Temp_Allocator) usize {
     return @max(self.high_water, self.snapshot());
 }
 
+pub fn owns_ptr(self: *Temp_Allocator, ptr: *anyopaque) bool {
+    return @intFromPtr(ptr) >= @intFromPtr(self.reservation.ptr) and
+        @intFromPtr(ptr) < @intFromPtr(self.reservation.ptr + self.reservation.len);
+}
+
+pub fn owns_slice(self: *Temp_Allocator, comptime T: type, slice: []const T) bool {
+    return @intFromPtr(slice.ptr) >= @intFromPtr(self.reservation.ptr) and
+        @intFromPtr(slice.ptr + slice.len) <= @intFromPtr(self.reservation.ptr + self.reservation.len);
+}
+
 pub const Reset_Params = struct {
     usage_contraction_rate: u16 = 1,
     usage_expansion_rate: u16 = 64,
