@@ -17,23 +17,22 @@
 /// The amount of memory committed or uncommitted at a time will always be a multiple of this.
 const commit_granularity = std.mem.alignForward(usize, 0x10000, std.heap.page_size_min);
 
-/// Memory that has been committed, but not yet used for an allocation.
-/// The allocator attempts to fulfill requests from this first.
-available: []u8 = &[_]u8 {},
 /// The maximum chunk of virtual address space that may be used by the allocator.
 reservation: []u8 = &[_]u8 {},
+/// The number of bytes at the beginning of `reservation` which have already been allocated and/or can't be used for a new allocation.
+consumed: usize = 0,
 /// The number of bytes at the end of `reservation` which are not committed.
 uncommitted: usize = 0,
 /// If The maximum bytes used has decreased since the last time the allocator was reset,
-/// this will store the maximum usage before the decrease.  It is only updated when
-/// `available.len + uncommitted` increases; use `high_water_usage()` to query the actual
-/// value including the current usage.
+/// this will store the maximum usage before the decrease.  It is only updated when `consumed`
+/// decreases; use `high_water_usage()` to query the actual value including the current usage.
 high_water: usize = 0,
 /// An exponential moving average for estimating what the high water mark will be on the next reset.
 usage_estimate: usize = 0,
 /// The actual high water mark from the last time the allocator was reset.
 prev_usage: usize = 0,
 
+/// Using this at the same time as the interface returned by `thread_safe_allocator` is not thread safe.
 pub fn allocator(self: *Temp_Allocator) std.mem.Allocator {
     return .{
         .ptr = self,
@@ -42,6 +41,21 @@ pub fn allocator(self: *Temp_Allocator) std.mem.Allocator {
             .resize = resize,
             .remap = remap,
             .free = free,
+        },
+    };
+}
+
+/// Provides a lock free thread safe `Allocator` interface to the underlying `Temp_Allocator`
+/// Using this at the same time as the interface returned by `allocator` is not thread safe.
+/// Using this at the same time as methods outside this interface (e.g. snapshot, release_to_snapshot, reset) is not thread safe.
+pub fn allocator_thread_safe(self: *Temp_Allocator) std.mem.Allocator {
+    return .{
+        .ptr = self,
+        .vtable = &.{
+            .alloc = alloc_thread_safe,
+            .resize = resize_thread_safe,
+            .remap = remap_thread_safe,
+            .free = free_thread_safe,
         },
     };
 }
@@ -78,8 +92,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
     }
 
     self.uncommitted = self.reservation.len;
-    self.available = self.reservation;
-    self.available.len = 0;
+    self.consumed = 0;
 }
 
 pub fn deinit(self: *Temp_Allocator) void {
@@ -96,26 +109,32 @@ pub fn deinit(self: *Temp_Allocator) void {
             },
         }
     }
-    self.available = &[_]u8 {};
     self.reservation = &[_]u8 {};
+    self.consumed = 0;
     self.uncommitted = 0;
+}
+
+pub fn available(self: *Temp_Allocator) usize {
+    return self.reservation.len - self.consumed;
 }
 
 pub fn committed(self: *Temp_Allocator) usize {
     return self.reservation.len - self.uncommitted;
 }
 
+pub fn committed_available(self: *Temp_Allocator) usize {
+    return self.reservation.len - self.uncommitted - self.consumed;
+}
+
 pub fn snapshot(self: *Temp_Allocator) usize {
-    return self.reservation.len - self.uncommitted - self.available.len;
+    return self.consumed;
 }
 
 pub fn release_to_snapshot(self: *Temp_Allocator, snapshot_value: usize) void {
     const high_water = self.high_water_usage();
     self.high_water = high_water;
     std.debug.assert(snapshot_value <= high_water);
-
-    const end_of_available = self.committed();
-    self.available = self.reservation[snapshot_value..end_of_available];
+    self.consumed = snapshot_value;
 }
 
 pub fn high_water_usage(self: *Temp_Allocator) usize {
@@ -158,7 +177,7 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
         committed_bytes = self.reservation.len - self.uncommitted;
     }
 
-    self.available = self.reservation[0..committed_bytes];
+    self.consumed = 0;
     self.high_water = 0;
     self.usage_estimate = new_usage_estimate;
     self.prev_usage = high_water;
@@ -192,79 +211,152 @@ fn scale_usage_delta(delta: usize, comptime scale: usize) usize {
     return @max(1, if (delta >= (1 << 20)) delta / 1024 * scale else delta * scale / 1024);
 }
 
-fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
-    _ = ra;
+fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+    _ = ret_addr;
 
     const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
-    const align_offset = std.mem.alignPointerOffset(self.available.ptr, alignment.toByteUnits()) orelse return null;
+    const align_offset = std.mem.alignPointerOffset(self.reservation.ptr + self.consumed, alignment.toByteUnits()) orelse return null;
     const needed = n + align_offset;
-    if (needed > self.available.len) {
-
-        const len_to_commit = std.mem.alignForward(usize, needed - self.available.len, commit_granularity);
-        if (len_to_commit > self.uncommitted) {
-            return null;
-        }
-
-        const end_of_available = self.committed();
-        const to_commit = self.reservation[end_of_available..][0..len_to_commit];
-
-        switch (builtin.os.tag) {
-            .windows => {
-                const w = std.os.windows;
-                var base_addr: ?*anyopaque = to_commit.ptr;
-                var size: usize = to_commit.len;
-                const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true });
-                if (status != w.NTSTATUS.SUCCESS) return null;
-                std.debug.assert(base_addr == @as(?*anyopaque, to_commit.ptr));
-                std.debug.assert(size == len_to_commit);
-            },
-            else => {
-                const status = std.posix.system.mprotect(@alignCast(@ptrCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
-                if (status != 0) return null;
-            },
-        }
-
-        self.available = self.reservation[end_of_available - self.available.len .. end_of_available + len_to_commit];
+    const have = self.committed_available();
+    if (needed > have) {
+        const len_to_commit = std.mem.alignForward(usize, needed - have, commit_granularity);
+        if (len_to_commit > self.uncommitted) return null;
+        if (!commit(self.reservation[self.committed()..][0..len_to_commit])) return null;
         self.uncommitted -= len_to_commit;
     }
 
-    const result = self.available[align_offset..needed];
-    self.available = self.available[needed..];
+    const result = self.reservation[self.consumed + align_offset ..][0..n];
+    self.consumed += needed;
     return result.ptr;
+}
+
+fn alloc_thread_safe(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+    _ = ret_addr;
+
+    const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
+    const ptr_align = alignment.toByteUnits();
+
+    var observed_consumed = @atomicLoad(usize, &self.consumed, .monotonic);
+    var observed_uncommitted = @atomicLoad(usize, &self.uncommitted, .monotonic);
+    while (true) {
+        const align_offset = std.mem.alignPointerOffset(self.reservation.ptr + observed_consumed, ptr_align) orelse return null;
+        const needed = n + align_offset;
+        const have = self.reservation.len -| (observed_uncommitted + observed_consumed);
+        if (needed > have) {
+            const len_to_commit = std.mem.alignForward(usize, needed - have, commit_granularity);
+            if (len_to_commit > observed_uncommitted) return null;
+            if (!commit(self.reservation[self.reservation.len - observed_uncommitted ..][0..len_to_commit])) return null;
+            const new_uncommitted = observed_uncommitted - len_to_commit;
+            const found_uncommitted = @atomicRmw(usize, &self.uncommitted, .Min, new_uncommitted, .monotonic);
+            observed_uncommitted = @min(new_uncommitted, found_uncommitted);
+            continue;
+        }
+
+        const new_consumed = observed_consumed + needed;
+        observed_consumed = @cmpxchgWeak(usize, &self.consumed, observed_consumed, new_consumed, .acquire, .monotonic) orelse {
+            return self.reservation.ptr + observed_consumed + align_offset;
+        };
+    }
+}
+
+fn commit(to_commit: []u8) bool {
+    switch (builtin.os.tag) {
+        .windows => {
+            const w = std.os.windows;
+            var base_addr: ?*anyopaque = to_commit.ptr;
+            var size: usize = to_commit.len;
+            const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true });
+            switch (status) {
+                w.NTSTATUS.SUCCESS, w.NTSTATUS.ALREADY_COMMITTED => {},
+                else => return false,
+            }
+            std.debug.assert(base_addr == @as(?*anyopaque, to_commit.ptr));
+            std.debug.assert(size == to_commit.len);
+        },
+        else => {
+            const status = std.posix.system.mprotect(@alignCast(@ptrCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
+            if (status != 0) return false;
+        },
+    }
+    return true;
 }
 
 fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
     const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
-    if (memory.len >= new_len) {
-        if (memory[memory.len..].ptr == self.available.ptr) {
-            //shrinking the last allocation
+    // "`alignment` must equal the same value that was passed as the `alignment` parameter to the original `alloc` call."
+    //   - std.mem.Allocator VTable
+    //if (std.mem.alignPointerOffset(memory.ptr, alignment.toByteUnits()) != 0) return false;
+
+    const is_last_alloc = memory.ptr + memory.len == self.reservation.ptr + self.consumed;
+
+    if (new_len <= memory.len) {
+        if (is_last_alloc) {
             const high_water = self.high_water_usage();
-            const end_of_available = self.committed();
-            self.available = self.reservation[end_of_available - self.available.len - memory.len + new_len .. end_of_available];
+            self.consumed = self.consumed - (memory.len - new_len);
             self.high_water = high_water;
         }
         return true;
-    } else if (memory[memory.len..].ptr == self.available.ptr) {
-        // expanding the last allocation
-        const old_available = self.available;
-        const end_of_available = self.committed();
-        self.available = self.reservation[end_of_available - self.available.len - memory.len .. end_of_available];
-        const result = alloc(ctx, new_len, alignment, ret_addr) orelse {
-            self.available = old_available;
-            return false;
-        };
-        std.debug.assert(result == memory.ptr);
-        return true;
-    } else {
-        // can't expand an internal allocation
+    }
+
+    if (!is_last_alloc) return false;
+
+    self.consumed -= memory.len;
+    const result = alloc(ctx, new_len, alignment, ret_addr) orelse {
+        self.consumed += memory.len;
         return false;
+    };
+    std.debug.assert(result == memory.ptr);
+    return true;
+}
+
+fn resize_thread_safe(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+    _ = alignment;
+    _ = ret_addr;
+
+    const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
+
+    const observed_consumed = @atomicLoad(usize, &self.consumed, .monotonic);
+    const is_last_alloc = memory.ptr + memory.len == self.reservation.ptr + observed_consumed;
+
+    if (new_len <= memory.len) {
+        if (is_last_alloc) {
+            const new_consumed = observed_consumed - (memory.len - new_len);
+            if (@cmpxchgStrong(usize, &self.consumed, observed_consumed, new_consumed, .release, .monotonic) == null) {
+                _ = @atomicRmw(usize, &self.high_water, .Max, observed_consumed, .monotonic);
+            }
+        }
+        return true;
+    }
+
+    if (!is_last_alloc) return false;
+
+    var observed_uncommitted = @atomicLoad(usize, &self.uncommitted, .monotonic);
+    while (true) {
+        const needed = new_len - memory.len;
+        const have = self.reservation.len -| (observed_uncommitted + observed_consumed);
+        if (needed > have) {
+            const len_to_commit = std.mem.alignForward(usize, needed - have, commit_granularity);
+            if (len_to_commit > observed_uncommitted) return false;
+            if (!commit(self.reservation[self.reservation.len - observed_uncommitted ..][0..len_to_commit])) return false;
+            const new_uncommitted = observed_uncommitted - len_to_commit;
+            const found_uncommitted = @atomicRmw(usize, &self.uncommitted, .Min, new_uncommitted, .monotonic);
+            observed_uncommitted = @min(new_uncommitted, found_uncommitted);
+            continue;
+        }
+
+        const new_consumed = observed_consumed + needed;
+        return @cmpxchgWeak(usize, &self.consumed, observed_consumed, new_consumed, .acquire, .monotonic) == null;
     }
 }
 
 fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
     return if (resize(ctx, memory, alignment, new_len, ret_addr)) memory.ptr else null;
+}
+
+fn remap_thread_safe(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+    return if (resize_thread_safe(ctx, memory, alignment, new_len, ret_addr)) memory.ptr else null;
 }
 
 fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
@@ -273,12 +365,27 @@ fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: u
 
     const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
 
-    if (memory[memory.len..].ptr == self.available.ptr) {
-        // freeing the last allocation
+    const is_last_alloc = memory.ptr + memory.len == self.reservation.ptr + self.consumed;
+    if (is_last_alloc) {
         const high_water = self.high_water_usage();
-        const end_of_available = self.committed();
-        self.available = self.reservation[end_of_available - self.available.len - memory.len .. end_of_available];
+        self.consumed -= memory.len;
         self.high_water = high_water;
+    }
+}
+
+fn free_thread_safe(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+    _ = alignment;
+    _ = ret_addr;
+
+    const self: *Temp_Allocator = @ptrCast(@alignCast(ctx));
+
+    const observed_consumed = @atomicLoad(usize, &self.consumed, .monotonic);
+    const is_last_alloc = memory.ptr + memory.len == self.reservation.ptr + observed_consumed;
+    if (!is_last_alloc) return;
+
+    const new_consumed = observed_consumed - memory.len;
+    if (@cmpxchgStrong(usize, &self.consumed, observed_consumed, new_consumed, .release, .monotonic) == null) {
+        _ = @atomicRmw(usize, &self.high_water, .Max, observed_consumed, .monotonic);
     }
 }
 
