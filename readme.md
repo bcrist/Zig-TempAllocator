@@ -31,6 +31,14 @@ pub fn main() void {
 }
 ```
 
+## Branches
+| Zig Version  | Recommended Branch |
+|==============|====================|
+| 0.18.0-dev.* | zig-master         |
+| 0.17.0       | main               |
+| 0.16.0       | zig-0.16           |
+| 0.15.2       | zig-0.15           |
+
 ## Implementation Notes
 
 The allocator utilizes a fixed chunk of virtual address space to allocate from.  The size of this chunk must be specified when initializing the allocator, and can't be changed while the allocator is in use.  But the maximum size may be enormous (up to several terabytes on windows, and possibly even more on other systems).  This is because the full virtual address chunk won't be "committed" to physical memory and/or swap pages until it's actually used.
