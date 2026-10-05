@@ -69,7 +69,7 @@ pub fn init(max_capacity: usize) !Temp_Allocator {
 pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
     std.debug.assert(self.reservation.len == 0);
 
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .windows => {
             const w = std.os.windows;
             var base_addr: ?*anyopaque = null;
@@ -97,7 +97,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
 
 pub fn deinit(self: *Temp_Allocator) void {
     if (self.reservation.len > 0) {
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .windows => {
                 const w = std.os.windows;
                 var base_addr: ?*anyopaque = self.reservation.ptr;
@@ -169,7 +169,7 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
     if (committed_bytes > max_committed) {
         const to_decommit = self.reservation[max_committed..committed_bytes];
         self.uncommitted = self.reservation.len - max_committed;
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .windows => {
                 const w = std.os.windows;
                 var base_addr: ?*anyopaque = to_decommit.ptr;
@@ -271,7 +271,7 @@ fn alloc_thread_safe(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, re
 }
 
 fn commit(to_commit: []u8) bool {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .windows => {
             const w = std.os.windows;
             var base_addr: ?*anyopaque = to_commit.ptr;

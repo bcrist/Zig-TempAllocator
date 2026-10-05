@@ -25,7 +25,7 @@ pub fn main() void {
         temp.reset();
         n += 1;
 
-        var temp: []u8 = std.fmt.allocPrint(temp.allocator(), "number {} is {s}", .{ n, "Something" });
+        var temp: []u8 = temp.allocator().print("number {} is {s}", .{ n, "Something" });
         app.doSomethingWithAString(temp);
     }
 }
