@@ -18,7 +18,7 @@
 const commit_granularity = std.mem.alignForward(usize, 0x10000, std.heap.page_size_min);
 
 /// The maximum chunk of virtual address space that may be used by the allocator.
-reservation: []u8 = &[_]u8 {},
+reservation: []u8 = &[_]u8{},
 /// The number of bytes at the beginning of `reservation` which have already been allocated and/or can't be used for a new allocation.
 consumed: usize = 0,
 /// The number of bytes at the end of `reservation` which are not committed.
@@ -61,7 +61,7 @@ pub fn allocator_thread_safe(self: *Temp_Allocator) std.mem.Allocator {
 }
 
 pub fn init(max_capacity: usize) !Temp_Allocator {
-    var self = Temp_Allocator {};
+    var self = Temp_Allocator{};
     try self.reserve(max_capacity);
     return self;
 }
@@ -88,7 +88,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
                 .ANONYMOUS = true,
                 .NORESERVE = true,
             }, -1, 0);
-        }
+        },
     }
 
     self.uncommitted = self.reservation.len;
@@ -109,7 +109,7 @@ pub fn deinit(self: *Temp_Allocator) void {
             },
         }
     }
-    self.reservation = &[_]u8 {};
+    self.reservation = &[_]u8{};
     self.consumed = 0;
     self.uncommitted = 0;
 }
@@ -180,7 +180,7 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
                 std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
                     // ignore
                 };
-                _ = std.posix.system.mprotect(@alignCast(@ptrCast(to_decommit.ptr)), to_decommit.len, .{});
+                _ = std.posix.system.mprotect(@ptrCast(@alignCast(to_decommit.ptr)), to_decommit.len, .{});
             },
         }
 
@@ -285,7 +285,7 @@ fn commit(to_commit: []u8) bool {
             std.debug.assert(size == to_commit.len);
         },
         else => {
-            const status = std.posix.system.mprotect(@alignCast(@ptrCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
+            const status = std.posix.system.mprotect(@ptrCast(@alignCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
             if (status != 0) return false;
         },
     }
