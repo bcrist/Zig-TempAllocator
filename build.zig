@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const commit_granularity_desc = "The amount of memory committed or uncommitted at a time will always be a multiple of this (after aligning to the page size).  Defaults to 0x10000.";
+    const commit_granularity_desc = "The amount of memory committed or uncommitted at a time will always be a multiple of this (after aligning to the page size).  Defaults to 64K.";
     const commit_granularity = b.option(usize, "commit_granularity", commit_granularity_desc) orelse 0x10000;
 
     const default_headroom_desc = "The headroom amount when using .init() instead of .init_headroom().  Defaults to half of commit_granularity.";
