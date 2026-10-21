@@ -15,7 +15,7 @@
 //    converted to `PROT_READ | PROT_WRITE` as necessary
 
 /// The amount of memory committed or uncommitted at a time will always be a multiple of this.
-const commit_granularity = std.mem.alignForward(usize, 0x10000, std.heap.page_size_min);
+const commit_granularity = std.mem.alignForward(usize, options.commit_granularity, std.heap.page_size_min);
 
 /// The maximum chunk of virtual address space that may be used by the allocator.
 reservation: []u8 = &[_]u8{},
@@ -95,7 +95,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
 
     const max_capacity_aligned = std.mem.alignForward(usize, max_capacity, commit_granularity);
 
-    switch (builtin.target.os.tag) {
+    switch (os) {
         .windows => {
             const w = std.os.windows;
             var base_addr: ?*anyopaque = null;
@@ -123,7 +123,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
 
 pub fn deinit(self: *Temp_Allocator) void {
     if (self.reservation.len > 0) {
-        switch (builtin.target.os.tag) {
+        switch (os) {
             .windows => {
                 const w = std.os.windows;
                 var base_addr: ?*anyopaque = self.reservation.ptr;
@@ -410,7 +410,7 @@ fn free_thread_safe(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment,
 }
 
 fn commit(to_commit: []u8) bool {
-    switch (builtin.target.os.tag) {
+    switch (os) {
         .windows => {
             const w = std.os.windows;
             var base_addr: ?*anyopaque = to_commit.ptr;
@@ -432,7 +432,7 @@ fn commit(to_commit: []u8) bool {
 }
 
 fn decommit(to_decommit: []u8) void {
-    switch (builtin.target.os.tag) {
+    switch (os) {
         .windows => {
             const w = std.os.windows;
             var base_addr: ?*anyopaque = to_decommit.ptr;
@@ -449,5 +449,7 @@ fn decommit(to_decommit: []u8) void {
 }
 
 const Temp_Allocator = @This();
-const builtin = @import("builtin");
+
+const os = @import("builtin").target.os.tag;
+const options = @import("options");
 const std = @import("std");
