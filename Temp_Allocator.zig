@@ -176,6 +176,22 @@ pub fn owns_slice(self: *Temp_Allocator, comptime T: type, slice: []const T) boo
         @intFromPtr(slice.ptr + slice.len) <= @intFromPtr(self.reservation.ptr + self.reservation.len);
 }
 
+pub fn set_committed(self: *Temp_Allocator, new_committed_bytes: usize) std.mem.Allocator.Error!void {
+    const committed_bytes = self.reservation.len - self.uncommitted;
+    const new_committed_bytes_aligned = std.mem.alignForward(usize, new_committed_bytes, commit_granularity);
+
+    if (new_committed_bytes_aligned == committed_bytes) return;
+
+    if (new_committed_bytes_aligned > committed_bytes) {
+        if (new_committed_bytes_aligned > self.reservation.len) return error.OutOfMemory;
+        if (!commit(self.reservation[committed_bytes..new_committed_bytes_aligned])) return error.OutOfMemory;
+    } else if (new_committed_bytes_aligned < committed_bytes) {
+        std.debug.assert(new_committed_bytes_aligned >= self.consumed);
+        decommit(self.reservation[new_committed_bytes_aligned..committed_bytes]);
+    }
+    self.uncommitted = self.reservation.len - new_committed_bytes_aligned;
+}
+
 pub const Reset_Params = struct {
     /// When the high water usage is less than the previously computed usage estimate, the
     /// new usage estimate will be decreased.  The amount it decreases by is scaled by this
@@ -204,28 +220,13 @@ pub const Reset_Params = struct {
 pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
     const high_water = self.high_water_usage();
     const new_usage_estimate = self.compute_usage_estimate(high_water, params);
-    var committed_bytes = self.reservation.len - self.uncommitted;
+    const committed_bytes = self.reservation.len - self.uncommitted;
     const max_committed = std.mem.alignForward(usize, new_usage_estimate + self.headroom, commit_granularity);
 
     if (committed_bytes > max_committed) {
         const to_decommit = self.reservation[max_committed..committed_bytes];
         self.uncommitted = self.reservation.len - max_committed;
-        switch (builtin.target.os.tag) {
-            .windows => {
-                const w = std.os.windows;
-                var base_addr: ?*anyopaque = to_decommit.ptr;
-                var size: usize = to_decommit.len;
-                _ = w.ntdll.NtFreeVirtualMemory(w.current_process, @ptrCast(&base_addr), &size, .{ .DECOMMIT = true });
-            },
-            else => {
-                std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
-                    // ignore
-                };
-                _ = std.posix.system.mprotect(@ptrCast(@alignCast(to_decommit.ptr)), to_decommit.len, .{});
-            },
-        }
-
-        committed_bytes = self.reservation.len - self.uncommitted;
+        decommit(to_decommit);
     }
 
     self.consumed = 0;
@@ -299,28 +300,6 @@ fn alloc_thread_safe(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, re
             return self.reservation.ptr + observed_consumed + align_offset;
         };
     }
-}
-
-fn commit(to_commit: []u8) bool {
-    switch (builtin.target.os.tag) {
-        .windows => {
-            const w = std.os.windows;
-            var base_addr: ?*anyopaque = to_commit.ptr;
-            var size: usize = to_commit.len;
-            const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true });
-            switch (status) {
-                w.NTSTATUS.SUCCESS, w.NTSTATUS.ALREADY_COMMITTED => {},
-                else => return false,
-            }
-            std.debug.assert(base_addr == @as(?*anyopaque, to_commit.ptr));
-            std.debug.assert(size == to_commit.len);
-        },
-        else => {
-            const status = std.posix.system.mprotect(@ptrCast(@alignCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
-            if (status != 0) return false;
-        },
-    }
-    return true;
 }
 
 fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
@@ -426,6 +405,45 @@ fn free_thread_safe(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment,
     const new_consumed = observed_consumed - memory.len;
     if (@cmpxchgStrong(usize, &self.consumed, observed_consumed, new_consumed, .release, .monotonic) == null) {
         _ = @atomicRmw(usize, &self.high_water, .Max, observed_consumed, .monotonic);
+    }
+}
+
+fn commit(to_commit: []u8) bool {
+    switch (builtin.target.os.tag) {
+        .windows => {
+            const w = std.os.windows;
+            var base_addr: ?*anyopaque = to_commit.ptr;
+            var size: usize = to_commit.len;
+            const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true });
+            switch (status) {
+                w.NTSTATUS.SUCCESS, w.NTSTATUS.ALREADY_COMMITTED => {},
+                else => return false,
+            }
+            std.debug.assert(base_addr == @as(?*anyopaque, to_commit.ptr));
+            std.debug.assert(size == to_commit.len);
+        },
+        else => {
+            const status = std.posix.system.mprotect(@ptrCast(@alignCast(to_commit.ptr)), to_commit.len, .{ .READ = true, .WRITE = true });
+            if (status != 0) return false;
+        },
+    }
+    return true;
+}
+
+fn decommit(to_decommit: []u8) void {
+    switch (builtin.target.os.tag) {
+        .windows => {
+            const w = std.os.windows;
+            var base_addr: ?*anyopaque = to_decommit.ptr;
+            var size: usize = to_decommit.len;
+            _ = w.ntdll.NtFreeVirtualMemory(w.current_process, @ptrCast(&base_addr), &size, .{ .DECOMMIT = true });
+        },
+        else => {
+            std.posix.madvise(@alignCast(to_decommit.ptr), to_decommit.len, std.posix.MADV.DONTNEED) catch {
+                // ignore
+            };
+            _ = std.posix.system.mprotect(@ptrCast(@alignCast(to_decommit.ptr)), to_decommit.len, .{});
+        },
     }
 }
 

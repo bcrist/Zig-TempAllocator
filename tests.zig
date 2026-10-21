@@ -23,6 +23,8 @@ test {
     ta.reset(.{});
     try expectEqual(@as(usize, 0), ta.high_water_usage());
     try expectEqual(@as(usize, 0x50000), ta.committed());
+    try ta.set_committed(0x40000);
+    try expectEqual(@as(usize, 0x40000), ta.committed());
 
     temp = try alloc.alloc(u8, 1000);
     const snapshot = ta.snapshot();
