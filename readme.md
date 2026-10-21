@@ -22,7 +22,7 @@ pub fn main() void {
 
     var n: usize = 0;
     while (!app.shouldExit()) {
-        temp.reset();
+        temp.reset(.{});
         n += 1;
 
         var temp: []u8 = temp.allocator().print("number {} is {s}", .{ n, "Something" });
@@ -33,7 +33,7 @@ pub fn main() void {
 
 ## Branches
 | Zig Version  | Recommended Branch |
-|==============|====================|
+|--------------|--------------------|
 | 0.18.0-dev.* | zig-master         |
 | 0.17.0       | main               |
 | 0.16.0       | zig-0.16           |

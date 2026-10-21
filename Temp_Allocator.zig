@@ -20,17 +20,18 @@ const commit_granularity = std.mem.alignForward(usize, 0x10000, std.heap.page_si
 /// The maximum chunk of virtual address space that may be used by the allocator.
 reservation: []u8 = &[_]u8{},
 /// The number of bytes at the beginning of `reservation` which have already been allocated and/or can't be used for a new allocation.
-consumed: usize = 0,
+consumed: usize,
 /// The number of bytes at the end of `reservation` which are not committed.
-uncommitted: usize = 0,
+uncommitted: usize,
 /// If The maximum bytes used has decreased since the last time the allocator was reset,
 /// this will store the maximum usage before the decrease.  It is only updated when `consumed`
 /// decreases; use `high_water_usage()` to query the actual value including the current usage.
-high_water: usize = 0,
+high_water: usize,
 /// An exponential moving average for estimating what the high water mark will be on the next reset.
-usage_estimate: usize = 0,
-/// The actual high water mark from the last time the allocator was reset.
-prev_usage: usize = 0,
+usage_estimate: usize,
+/// When resetting, `headroom` will be added to the usage estimate before being aligned to `commit_granularity`.
+/// Setting this larger than the expected variance in usage ensures that, committing will only happen during `reset()`.
+headroom: usize,
 
 /// Using this at the same time as the interface returned by `thread_safe_allocator` is not thread safe.
 pub fn allocator(self: *Temp_Allocator) std.mem.Allocator {
@@ -61,19 +62,43 @@ pub fn allocator_thread_safe(self: *Temp_Allocator) std.mem.Allocator {
 }
 
 pub fn init(max_capacity: usize) !Temp_Allocator {
-    var self = Temp_Allocator{};
+    var self: Temp_Allocator = .{
+        .reservation = &.{},
+        .consumed = 0,
+        .uncommitted = 0,
+        .high_water = 0,
+        .usage_estimate = 0,
+        .headroom = commit_granularity / 2,
+    };
     try self.reserve(max_capacity);
     return self;
 }
 
+pub fn init_headroom(max_capacity: usize, headroom: usize) !Temp_Allocator {
+    var self: Temp_Allocator = .{
+        .reservation = &.{},
+        .consumed = 0,
+        .uncommitted = 0,
+        .high_water = 0,
+        .usage_estimate = 0,
+        .headroom = headroom,
+    };
+    try self.reserve(max_capacity);
+    return self;
+}
+
+/// This can be used to reinitialize the arena after `deinit()` has been used.
+/// Otherwise it is called internally by `init()`.
 pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
     std.debug.assert(self.reservation.len == 0);
+
+    const max_capacity_aligned = std.mem.alignForward(usize, max_capacity, commit_granularity);
 
     switch (builtin.target.os.tag) {
         .windows => {
             const w = std.os.windows;
             var base_addr: ?*anyopaque = null;
-            var size: usize = max_capacity;
+            var size: usize = max_capacity_aligned;
             const status = w.ntdll.NtAllocateVirtualMemory(w.current_process, @ptrCast(&base_addr), 0, &size, .{ .RESERVE = true }, .{ .NOACCESS = true });
             if (status != w.NTSTATUS.SUCCESS) return error.OutOfMemory;
             self.reservation.ptr = @ptrCast(base_addr);
@@ -83,7 +108,7 @@ pub fn reserve(self: *Temp_Allocator, max_capacity: usize) !void {
             // N.B. We use MAP_NORESERVE to prevent clogging swap, but this does mean we open up the possibility of getting segfaults later
             // when the temporary allocator's memory is written to.  But linux's default vm.overcommit_memory sysctl means that can happen
             // for pretty much any allocation.  So Zig's use of errors to try to handle allocation failures is already broken on linux.
-            self.reservation = try std.posix.mmap(null, max_capacity, .{}, .{
+            self.reservation = try std.posix.mmap(null, max_capacity_aligned, .{}, .{
                 .TYPE = .PRIVATE,
                 .ANONYMOUS = true,
                 .NORESERVE = true,
@@ -152,19 +177,35 @@ pub fn owns_slice(self: *Temp_Allocator, comptime T: type, slice: []const T) boo
 }
 
 pub const Reset_Params = struct {
+    /// When the high water usage is less than the previously computed usage estimate, the
+    /// new usage estimate will be decreased.  The amount it decreases by is scaled by this
+    /// binary fixed point coefficient with 10 fractional bits:
     usage_contraction_rate: u16 = 1,
+
+    /// When the high water usage is greater than the previously computed usage estimate, the
+    /// new usage estimate will be increased.  The amount it increases by is scaled by this
+    /// binary fixed point coefficient with 10 fractional bits:
     usage_expansion_rate: u16 = 64,
+
+    /// If the high water usage overflows the initially committed range, the new usage estimate
+    /// will be increased by this binary fixed point coefficient (with 10 fractional bits)
+    /// instead of `usage_expansion_rate`.
+    ///
+    /// Generally this should happen very rarely unless `headroom` has been set too small.
+    ///
+    /// The default of 1024 means the new usage estimate will be exactly equal to the high
+    /// water mark.
     fast_usage_expansion_rate: u16 = 1024,
-    // The defaults above give an impulse response "half-life" for usage_estimate as follows:
+
+    // The defaults above give an impulse response "half-life" for `usage_estimate` as follows:
     //     ~11 cycles after an increase
     //     ~710 cycles after a decrease
-    // If the initially committed range overflows two cycles in a row, it will be expanded on the second reset.
 };
 pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
     const high_water = self.high_water_usage();
     const new_usage_estimate = self.compute_usage_estimate(high_water, params);
     var committed_bytes = self.reservation.len - self.uncommitted;
-    const max_committed = std.mem.alignForward(usize, new_usage_estimate + commit_granularity, commit_granularity);
+    const max_committed = std.mem.alignForward(usize, new_usage_estimate + self.headroom, commit_granularity);
 
     if (committed_bytes > max_committed) {
         const to_decommit = self.reservation[max_committed..committed_bytes];
@@ -190,28 +231,18 @@ pub fn reset(self: *Temp_Allocator, comptime params: Reset_Params) void {
     self.consumed = 0;
     self.high_water = 0;
     self.usage_estimate = new_usage_estimate;
-    self.prev_usage = high_water;
 }
 
 fn compute_usage_estimate(self: *Temp_Allocator, usage: usize, comptime params: Reset_Params) usize {
     const last_usage_estimate = self.usage_estimate;
-    const initial_committed_bytes = std.mem.alignForward(usize, last_usage_estimate + commit_granularity, commit_granularity);
     if (last_usage_estimate == 0) {
         return usage;
-    } else if (usage > last_usage_estimate) {
-        if (usage > initial_committed_bytes and self.prev_usage > initial_committed_bytes) {
-            const delta = @max(usage, self.prev_usage) - last_usage_estimate;
-            return last_usage_estimate + scale_usage_delta(delta, params.fast_usage_expansion_rate);
-        } else {
-            const avg_usage = usage / 2 + self.prev_usage / 2;
-            if (avg_usage > last_usage_estimate) {
-                return last_usage_estimate + scale_usage_delta(avg_usage - last_usage_estimate, params.usage_expansion_rate);
-            } else {
-                return last_usage_estimate;
-            }
-        }
     } else if (usage < last_usage_estimate) {
         return last_usage_estimate - scale_usage_delta(last_usage_estimate - usage, params.usage_contraction_rate);
+    } else if (usage > std.mem.alignForward(usize, last_usage_estimate + self.headroom, commit_granularity)) {
+        return last_usage_estimate + scale_usage_delta(usage - last_usage_estimate, params.fast_usage_expansion_rate);
+    } else if (usage > last_usage_estimate) {
+        return last_usage_estimate + scale_usage_delta(usage - last_usage_estimate, params.usage_expansion_rate);
     } else {
         return last_usage_estimate;
     }
@@ -377,9 +408,8 @@ fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: u
 
     const is_last_alloc = memory.ptr + memory.len == self.reservation.ptr + self.consumed;
     if (is_last_alloc) {
-        const high_water = self.high_water_usage();
+        self.high_water = self.high_water_usage();
         self.consumed -= memory.len;
-        self.high_water = high_water;
     }
 }
 
