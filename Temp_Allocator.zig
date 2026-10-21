@@ -69,7 +69,7 @@ pub fn init(max_capacity: usize) !Temp_Allocator {
         .uncommitted = 0,
         .high_water = 0,
         .usage_estimate = 0,
-        .headroom = commit_granularity / 2,
+        .headroom = options.default_headroom,
     };
     try self.reserve(max_capacity);
     return self;
