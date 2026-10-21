@@ -30,7 +30,8 @@ high_water: usize,
 /// An exponential moving average for estimating what the high water mark will be on the next reset.
 usage_estimate: usize,
 /// When resetting, `headroom` will be added to the usage estimate before being aligned to `commit_granularity`.
-/// Setting this larger than the expected variance in usage ensures that, committing will only happen during `reset()`.
+/// Setting this larger than the expected variance in usage ensures that `reset()` usually won't accidentally
+/// decommit memory that needs to be recommited immediately on the next cycle.
 headroom: usize,
 
 /// Using this at the same time as the interface returned by `thread_safe_allocator` is not thread safe.
