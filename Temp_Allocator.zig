@@ -18,6 +18,7 @@
 const commit_granularity = std.mem.alignForward(usize, options.commit_granularity, std.heap.page_size_min);
 
 /// The maximum chunk of virtual address space that may be used by the allocator.
+/// invariant: reservation.len >= consumed + uncommitted
 reservation: []u8 = &[_]u8{},
 /// The number of bytes at the beginning of `reservation` which have already been allocated and/or can't be used for a new allocation.
 consumed: usize,

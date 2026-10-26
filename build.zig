@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     const commit_granularity = b.option(usize, "commit_granularity", commit_granularity_desc) orelse 0x10000;
 
     const default_headroom_desc = "The headroom amount when using .init() instead of .init_headroom().  Defaults to half of commit_granularity.";
-    const default_headroom = b.option(usize, "default_headroom", default_headroom_desc) orelse commit_granularity / 2;
+    const default_headroom = b.option(usize, "default_headroom", default_headroom_desc) orelse (commit_granularity / 2);
 
     const options = b.addOptions();
     options.addOption(usize, "commit_granularity", commit_granularity);
